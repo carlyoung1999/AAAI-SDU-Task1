@@ -2,7 +2,7 @@
 Description: 
 Author: Li Siheng
 Date: 2021-09-28 07:38:36
-LastEditTime: 2021-10-12 01:32:56
+LastEditTime: 2021-10-12 08:15:09
 '''
 import argparse
 import torch
@@ -18,10 +18,22 @@ class BaseAEModel(pl.LightningModule):
     @staticmethod
     def add_model_specific_args(parent_args):
         parser = parent_args.add_argument_group('BaseAEModel')
+        
+        # * Args for general setting
+        parser.add_argument('--eval', action='store_true', default=False)
+        parser.add_argument('--checkpoint_path', default=None, type=str)
+        parser.add_argument('--seed', default=42, type=int)
+        parser.add_argument('--save_dir', default='./save', type=str)
+        
+        parser.add_argument('--model_name', default='BertLSTMModel', type=str)
+        parser.add_argument('--pretrain_model',
+                            default='bert-base-uncased',
+                            type=str)
+        
         parser.add_argument('--lr', default=1e-5, type=float)
         parser.add_argument('--warmup', default=0.1, type=float)
 
-        # For BertLSTMModel
+        # * Args for BertLSTMModel
         parser.add_argument('--use_crf', default=False, action='store_true')
         parser.add_argument('--rnn_size', default=256, type=int)
         parser.add_argument('--rnn_nlayer', default=1, type=int)

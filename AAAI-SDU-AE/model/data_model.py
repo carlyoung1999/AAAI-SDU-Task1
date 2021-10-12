@@ -2,14 +2,13 @@
 Description: 
 Author: Li Siheng
 Date: 2021-10-10 03:08:16
-LastEditTime: 2021-10-12 01:34:43
+LastEditTime: 2021-10-12 09:10:01
 '''
 import argparse
 import json
 import copy
 import os
 import torch
-from torch.jit import annotate
 import torch.nn as nn
 import random
 import numpy as np
@@ -17,6 +16,8 @@ import pytorch_lightning as pl
 from typing import Optional
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
+from pytorch_lightning import Trainer, seed_everything, loggers
+from model.base_model import BaseAEModel
 
 
 class SDUDataModel(pl.LightningDataModule):
@@ -42,6 +43,8 @@ class SDUDataModel(pl.LightningDataModule):
                             type=str)
         parser.add_argument('--train_batchsize', default=32, type=int)
         parser.add_argument('--valid_batchsize', default=16, type=int)
+        
+        parser.add_argument('--nlabels', default=6, type=int)
 
         return parent_args
     
@@ -292,37 +295,20 @@ class SDUDataset(Dataset):
 if __name__ == '__main__':
 
     total_parser = argparse.ArgumentParser()
-    parser = total_parser.add_argument_group('Program Arguments')
-    parser.add_argument('--eval', action='store_true', default=False)
-    parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--num_workers', default=8, type=int)
-    parser.add_argument('--data_dir',
-                        default='./data/english/scientific',
-                        type=str)
-    parser.add_argument('--save_dir', default='./save', type=str)
-    parser.add_argument('--model_name', default='BertLSTMModel', type=str)
-    parser.add_argument('--checkpoint_path', default=None, type=str)
-    parser.add_argument('--train_data', default='train.json', type=str)
-    parser.add_argument('--valid_data', default='dev.json', type=str)
-    parser.add_argument('--test_data', default='dev.json', type=str)
-    parser.add_argument('--cached_train_data',
-                        default='cached_train_data.pkl',
-                        type=str)
-    parser.add_argument('--cached_valid_data',
-                        default='cached_valid_data.pkl',
-                        type=str)
-    parser.add_argument('--cached_test_data',
-                        default='cached_valid_data.pkl',
-                        type=str)
-    parser.add_argument('--train_batchsize', default=32, type=int)
-    parser.add_argument('--valid_batchsize', default=16, type=int)
 
-    parser.add_argument('--pretrain_model',
-                        default='bert-base-uncased',
-                        type=str)
+    # * Args for data preprocessing
+    total_parser = SDUDataModel.add_data_specific_args(total_parser)
+    
+    # * Args for training
+    total_parser = Trainer.add_argparse_args(total_parser)
+
+    # * Args for model specific
+    total_parser = BaseAEModel.add_model_specific_args(total_parser)
 
     args = total_parser.parse_args()
 
+
+    # * Here, we test the data preprocessing
     tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model,
                                               use_fast=True)
 

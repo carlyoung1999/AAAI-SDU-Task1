@@ -2,7 +2,7 @@
 Description: 
 Author: Li Siheng
 Date: 2021-10-11 11:00:12
-LastEditTime: 2021-10-12 01:33:58
+LastEditTime: 2021-10-12 08:17:21
 '''
 import os
 import sys
@@ -106,28 +106,15 @@ def evaluation(args, model, data_model, save_path):
 if __name__ == '__main__':
     total_parser = argparse.ArgumentParser()
 
-    # * args for data preprocessing
+    # * Args for data preprocessing
     total_parser = SDUDataModel.add_data_specific_args(total_parser)
     
-    # * args for training
+    # * Args for training
     total_parser = Trainer.add_argparse_args(total_parser)
 
-    # * args for model specific
+    # * Args for model specific
     total_parser = BaseAEModel.add_model_specific_args(total_parser)
-    
-    # * args for general setting
-    parser = total_parser.add_argument_group('Program Arguments')
-    parser.add_argument('--eval', action='store_true', default=False)
-    parser.add_argument('--checkpoint_path', default=None, type=str)
-    parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--save_dir', default='./save', type=str)
-    parser.add_argument('--model_name', default='BertLSTMModel', type=str)
-    parser.add_argument('--pretrain_model',
-                        default='bert-base-uncased',
-                        type=str)
-    parser.add_argument('--nlabels', default=6, type=int)
 
-    print(parser)
     args = total_parser.parse_args()
 
     main(args)
