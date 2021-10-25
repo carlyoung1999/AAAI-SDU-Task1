@@ -23,7 +23,7 @@ from model.bert_lstm_model import BertLSTMModel
 
 def main(args):
 
-    save_path = os.path.join(args.save_dir, args.model_name)
+    save_path = os.path.join(args.save_dir, args.pretrain_model, args.model_name)
 
     if args.model_name == 'BertLSTMModel':
         Model = BertLSTMModel
