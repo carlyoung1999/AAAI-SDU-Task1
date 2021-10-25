@@ -121,7 +121,7 @@ class SDUDataModel(pl.LightningDataModule):
                 acronyms = example['acronyms']
                 long_forms = example['long-forms']
 
-                encoded = self.tokenizer(text, return_offsets_mapping=True)
+                encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True, max_length=512 )
                 input_ids = encoded['input_ids']
                 attention_mask = encoded['attention_mask']
                 token_type_ids = encoded['token_type_ids']
