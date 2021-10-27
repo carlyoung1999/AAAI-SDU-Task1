@@ -1,0 +1,15 @@
+TOKENIZERS_PARALLELISM=false python main.py --gpus 1 \
+	--accelerator ddp \
+	--max_epochs 10 \
+	--lr 1e-5 \
+	--train_batchsize 16 \
+	--valid_batchsize 16 \
+	--num_workers 8 \
+	--val_check_interval 0.5 \
+	--pretrain_model Maltehb/danish-bert-botxo \
+	--model_name BertLSTMModel \
+	--rnn_size 256 \
+	--rnn_nlayer 1 \
+	--use_crf \
+	--data_dir ./data/danish \
+	--save_dir ./save/danish
