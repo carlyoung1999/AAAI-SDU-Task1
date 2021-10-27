@@ -2,7 +2,7 @@
 Description: 
 Author: Li Siheng
 Date: 2021-10-11 11:00:12
-LastEditTime: 2021-10-12 08:17:21
+LastEditTime: 2021-10-27 06:50:49
 '''
 import os
 import sys
@@ -24,11 +24,13 @@ from model.bert_lstm_model import BertLSTMModel
 def main(args):
 
     save_path = os.path.join(args.save_dir, args.model_name)
+    save_path = os.path.join(save_path, args.pretrain_model)
 
     if args.model_name == 'BertLSTMModel':
         Model = BertLSTMModel
-        hyparas = 'use_crf: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
-            args.use_crf, args.lr, args.rnn_size, args.rnn_nlayer)
+        hyparas = 'adversarial: {} - divergence: {} - adv_alpha: {} - use_crf: {} - bert_lr: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
+            args.adversarial, args.divergence, args.adv_alpha, args.use_crf,
+            args.bert_lr, args.lr, args.rnn_size, args.rnn_nlayer)
         save_path = os.path.join(save_path, hyparas)
 
     if not os.path.exists(save_path):
@@ -89,8 +91,9 @@ def evaluation(args, model, data_model, save_path):
 
             text = batch['text'][idx]
             offset_mapping = batch['offset_mapping'][idx]
-            
-            acronyms, long_forms = data_model.decode(text, predict, offset_mapping)
+
+            acronyms, long_forms = data_model.decode(text, predict,
+                                                     offset_mapping)
 
             pred = {
                 'ID': batch['idx'][idx],
@@ -108,7 +111,7 @@ if __name__ == '__main__':
 
     # * Args for data preprocessing
     total_parser = SDUDataModel.add_data_specific_args(total_parser)
-    
+
     # * Args for training
     total_parser = Trainer.add_argparse_args(total_parser)
 

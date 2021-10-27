@@ -2,7 +2,7 @@
 Description: 
 Author: Li Siheng
 Date: 2021-09-28 08:40:34
-LastEditTime: 2021-10-12 01:45:34
+LastEditTime: 2021-10-27 07:31:32
 '''
 import os
 import argparse
@@ -44,9 +44,9 @@ class BertLSTMModel(BaseAEModel):
         if self.use_crf:
             self.crf = CRF(self.nlabels, batch_first=True)
 
-    def forward(self, input_ids, attention_mask, token_type_ids, labels=None):
+    def forward(self, input_ids, attention_mask, token_type_ids, inputs_embeds=None, labels=None):
 
-        outputs = self.bert(input_ids, attention_mask, token_type_ids)
+        outputs = self.bert(input_ids, attention_mask, token_type_ids, inputs_embeds=inputs_embeds)
         hidden_state = outputs.last_hidden_state
 
         hidden_state, _ = self.lstm(hidden_state)

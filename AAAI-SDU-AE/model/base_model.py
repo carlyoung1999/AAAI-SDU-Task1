@@ -2,7 +2,7 @@
 Description: 
 Author: Li Siheng
 Date: 2021-09-28 07:38:36
-LastEditTime: 2021-10-12 08:15:09
+LastEditTime: 2021-10-27 06:49:38
 '''
 import argparse
 import torch
@@ -12,6 +12,7 @@ import pytorch_lightning as pl
 from transformers import AutoModel, AutoTokenizer, AutoConfig, AdamW
 from transformers.optimization import get_linear_schedule_with_warmup
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from .adversarial_loss import AdversarialLoss
 
 
 class BaseAEModel(pl.LightningModule):
@@ -19,7 +20,7 @@ class BaseAEModel(pl.LightningModule):
     def add_model_specific_args(parent_args):
         parser = parent_args.add_argument_group('BaseAEModel')
         
-        # * Args for general setting
+        # * general setting
         parser.add_argument('--eval', action='store_true', default=False)
         parser.add_argument('--checkpoint_path', default=None, type=str)
         parser.add_argument('--seed', default=42, type=int)
@@ -30,10 +31,23 @@ class BaseAEModel(pl.LightningModule):
                             default='bert-base-uncased',
                             type=str)
         
+        parser.add_argument('--bert_lr', default=1e-5, type=float)
         parser.add_argument('--lr', default=1e-5, type=float)
         parser.add_argument('--warmup', default=0.1, type=float)
 
-        # * Args for BertLSTMModel
+        # * adversarial training
+        parser.add_argument('--adversarial', action='store_true', default=False)
+        parser.add_argument('--divergence', default='js', type=str) 
+        parser.add_argument('--adv_step_size', default=1e-3, type=float,
+                            help="1 (default), perturbation size for adversarial training.")
+        parser.add_argument('--adv_alpha', default=1, type=float,
+                            help="1 (default), trade off parameter for adversarial training.")
+        parser.add_argument('--noise_var', default=1e-5, type=float)
+        parser.add_argument('--noise_gamma', default=1e-6, type=float, help="1e-4 (default), eps for adversarial copy training.")
+        parser.add_argument('--project_norm_type', default='inf', type=str) 
+
+
+        # * BertLSTMModel
         parser.add_argument('--use_crf', default=False, action='store_true')
         parser.add_argument('--rnn_size', default=256, type=int)
         parser.add_argument('--rnn_nlayer', default=1, type=int)
@@ -53,6 +67,9 @@ class BaseAEModel(pl.LightningModule):
         
         # * 5 is for label padding
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=5)
+
+        if self.hparams.adversarial:
+            self.adv_loss_fn = AdversarialLoss(args) 
 
     def setup(self, stage) -> None:
 
@@ -74,6 +91,9 @@ class BaseAEModel(pl.LightningModule):
 
         inputs = self.train_inputs(batch)
         loss, logits = self(**inputs)
+
+        if self.hparams.adversarial:
+            loss = self.adv_loss_fn(self, **inputs)
 
         mask = (batch['labels'] != 5).long()
         ntotal = mask.sum()
