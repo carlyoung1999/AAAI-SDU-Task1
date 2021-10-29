@@ -14,7 +14,6 @@ from transformers import AutoConfig, AutoModel
 
 
 class AdversarialLoss(object):
-
     def __init__(self, args) -> None:
         super().__init__()
         self.args = args
@@ -22,36 +21,42 @@ class AdversarialLoss(object):
         # * divergence function
         self.divergence = getattr(self, args.divergence)
 
-    
-    def __call__(self, model, **inputs):
+    def __call__(self, model, logits, input_ids, attention_mask,
+                 token_type_ids, labels):
 
-        loss, logits = model(**inputs)
-        
-        print(loss)
         # * get disturbed inputs
-        inputs_embeds = model.bert.embeddings.word_embeddings(inputs['input_ids'])
-        noise = inputs_embeds.new_tensor(inputs_embeds).normal_(0, 1) * self.args.noise_var
-        noise.requires_grad_()
-        inputs_embeds = inputs_embeds.detach() + noise
-        inputs['input_ids'] = None
-        _, adv_logits = model(**inputs, inputs_embeds=inputs_embeds)
-
-        adv_loss = self.divergence(adv_logits, logits.detach(), reduction='batchmean')
+        inputs_embeds = model.bert.embeddings.word_embeddings(input_ids)
+        noise = inputs_embeds.clone().detach().normal_(
+            0, 1).requires_grad_(True) * self.args.noise_var
         
-        # * now we need to find the best noise according to gradient
-        # * theoretically we need the max, to be more efficient, we
-        # * approximate with it by gradient assent
-        noise_grad = torch.autograd.grad(outputs=adv_loss, inputs=noise)
-        print(noise_grad)
-        noise = noise + noise_grad * self.args.adv_step_size
+        # * adv loop
+        for i in range(self.args.adv_nloop):
+            inputs_embeds = inputs_embeds.detach() + noise
+            _, adv_logits = model(attention_mask=attention_mask,
+                                token_type_ids=token_type_ids,
+                                inputs_embeds=inputs_embeds,
+                                labels=labels,
+                                adversarial_ite=True)
+
+            adv_loss = self.divergence(adv_logits,
+                                    logits.detach(),
+                                    reduction='batchmean')
+
+            # * now we need to find the best noise according to gradient
+            # * theoretically we need the max, to be more efficient, we
+            # * approximate with it by gradient assent
+            noise_grad = torch.autograd.grad(outputs=adv_loss, inputs=noise, retain_graph=True)[0]
+            noise = noise + noise_grad * self.args.adv_step_size
+        
 
         # * normalization
-        noise = self.adv_project(noise, norm_type=self.args.project_norm_type, eps=self.args.noise_gamma)
-        
-        adv_loss = self.divergence(adv_logits, logits)
-        loss = loss + self.args.adv_alpha * adv_loss
+        noise = self.adv_project(noise,
+                                 norm_type=self.args.project_norm_type,
+                                 eps=self.args.noise_gamma)
 
-        return loss
+        adv_loss = self.divergence(adv_logits, logits)
+
+        return adv_loss
 
     @staticmethod
     def adv_project(grad, norm_type='inf', eps=1e-6):
@@ -63,14 +68,14 @@ class AdversarialLoss(object):
             direction = grad / (grad.abs().max(-1, keepdim=True)[0] + eps)
         return direction
 
-    
     @staticmethod
     def kl(input, target, reduction="sum"):
         input = input.float()
         target = target.float()
-        loss = F.kl_div(F.log_softmax(input, dim=-1, dtype=torch.float32), F.softmax(target, dim=-1, dtype=torch.float32), reduction=reduction)
+        loss = F.kl_div(F.log_softmax(input, dim=-1, dtype=torch.float32),
+                        F.softmax(target, dim=-1, dtype=torch.float32),
+                        reduction=reduction)
         return loss
-
 
     @staticmethod
     def sym_kl(input, target, reduction="sum"):
@@ -89,8 +94,9 @@ class AdversarialLoss(object):
         m = 0.5 * m
         loss = F.kl_div(F.log_softmax(input, dim=-1, dtype=torch.float32), m, reduction=reduction) + \
             F.kl_div(F.log_softmax(target, dim=-1, dtype=torch.float32), m, reduction=reduction)
+
         return loss
-    
+
     @staticmethod
     def hl(input, target, reduction="sum"):
         """Hellinger divergence

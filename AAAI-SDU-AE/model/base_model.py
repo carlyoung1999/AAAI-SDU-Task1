@@ -38,6 +38,8 @@ class BaseAEModel(pl.LightningModule):
         # * adversarial training
         parser.add_argument('--adversarial', action='store_true', default=False)
         parser.add_argument('--divergence', default='js', type=str) 
+        parser.add_argument('--adv_nloop', default=1, type=int,
+                            help="1 (default), inner loop for getting the best perturbations.")
         parser.add_argument('--adv_step_size', default=1e-3, type=float,
                             help="1 (default), perturbation size for adversarial training.")
         parser.add_argument('--adv_alpha', default=1, type=float,
@@ -90,11 +92,8 @@ class BaseAEModel(pl.LightningModule):
     def training_step(self, batch, batch_idx):
 
         inputs = self.train_inputs(batch)
-        loss, logits = self(**inputs)
-
-        if self.hparams.adversarial:
-            loss = self.adv_loss_fn(self, **inputs)
-
+        loss, logits = self(**inputs)            
+                
         mask = (batch['labels'] != 5).long()
         ntotal = mask.sum()
         ncorrect = ((logits.argmax(dim=-1) == batch['labels']).long() *
@@ -123,27 +122,30 @@ class BaseAEModel(pl.LightningModule):
     def configure_optimizers(self):
 
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-        paras = list(self.named_parameters())
-        paras = [{
-            'params':
-            [p for n, p in paras if not any(nd in n for nd in no_decay)],
-            'weight_decay':
-            0.01
-        }, {
-            'params': [p for n, p in paras if any(nd in n for nd in no_decay)],
-            'weight_decay':
-            0.0
-        }]
-        optimizer = AdamW(paras, lr=self.hparams.lr)
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer, int(self.total_step * self.hparams.warmup),
-            self.total_step)
+        bert_paras = list(self.bert.named_parameters())
+        bert_paras = [
+            {'params': [p for n, p in bert_paras if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01, 'lr': self.hparams.bert_lr},
+            {'params': [p for n, p in bert_paras if any(nd in n for nd in no_decay)], 'weight_decay': 0.0, 'lr': self.hparams.bert_lr}
+        ]
+        
+        named_paras = list(self.named_parameters())
+        head_paras = [
+            {'params': [p for n, p in named_paras if 'bert' not in n], 'lr': self.hparams.lr}
+        ]
 
-        return [{
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'step',
-                'frequency': 1
+        paras = bert_paras + head_paras
+
+        optimizer = AdamW(paras, lr=self.hparams.lr)
+        scheduler = get_linear_schedule_with_warmup(optimizer, int(self.total_step*self.hparams.warmup), self.total_step)
+
+        return [
+            {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'step',
+                    'frequency': 1
+                }
             }
-        }]
+        ]
+        

@@ -28,9 +28,10 @@ def main(args):
 
     if args.model_name == 'BertLSTMModel':
         Model = BertLSTMModel
-        hyparas = 'adversarial: {} - divergence: {} - adv_alpha: {} - use_crf: {} - bert_lr: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
-            args.adversarial, args.divergence, args.adv_alpha, args.use_crf,
-            args.bert_lr, args.lr, args.rnn_size, args.rnn_nlayer)
+        hyparas = 'adversarial: {} - divergence: {} - adv_alpha: {} - adv_nloop: {} - use_crf: {} - bert_lr: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
+            args.adversarial, args.divergence, args.adv_alpha, args.adv_nloop,
+            args.use_crf, args.bert_lr, args.lr, args.rnn_size,
+            args.rnn_nlayer)
         save_path = os.path.join(save_path, hyparas)
 
     if not os.path.exists(save_path):
@@ -43,10 +44,10 @@ def main(args):
                                        name='')
     checkpoint = ModelCheckpoint(dirpath=save_path,
                                  save_top_k=1,
-                                 monitor='valid_loss',
-                                 mode='min',
-                                 filename='{epoch:02d}-{valid_loss:.4f}')
-    early_stop = EarlyStopping(monitor='valid_loss', mode='min', patience=3)
+                                 monitor='valid_acc',
+                                 mode='max',
+                                 filename='{epoch:02d}-{valid_acc:.4f}')
+    early_stop = EarlyStopping(monitor='valid_acc', mode='max', patience=5)
     trainer = Trainer.from_argparse_args(args,
                                          logger=logger,
                                          callbacks=[checkpoint, early_stop])
