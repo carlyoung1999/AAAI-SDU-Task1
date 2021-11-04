@@ -19,7 +19,8 @@ from transformers import AutoTokenizer
 from model.data_model import SDUDataModel, SDUDataset
 from model.base_model import BaseAEModel
 from model.bert_lstm_model import BertLSTMModel
-
+from scorer import *
+from argparse import Namespace
 
 def main(args):
 
@@ -27,8 +28,8 @@ def main(args):
 
     if args.model_name == 'BertLSTMModel':
         Model = BertLSTMModel
-        hyparas = 'use_crf: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
-            args.use_crf, args.lr, args.rnn_size, args.rnn_nlayer)
+        hyparas = 'use_crf: {} - bert_lr: {} - head_lr: {} - rnn_size: {} - rnn_layer: {} - use_span: {}'.format(
+            args.use_crf, args.bert_lr, args.head_lr, args.rnn_size, args.rnn_nlayer, args.use_span)
         save_path = os.path.join(save_path, hyparas)
 
     if not os.path.exists(save_path):
@@ -61,7 +62,7 @@ def main(args):
     else:
         tokenizer = AutoTokenizer.from_pretrained(save_path)
         data_model = SDUDataModel(args, tokenizer)
-        checkpoint_path = os.path.join(save_path, args.checkpoint_path)
+        checkpoint_path = os.path.join(args.checkpoint_path)
 
     # module evaluation
     model = Model.load_from_checkpoint(checkpoint_path, tokenizer=tokenizer)
@@ -76,6 +77,7 @@ def evaluation(args, model, data_model, save_path):
 
     device = torch.device('cuda:0')
     model.to(device)
+    model.stage = 'test'
     model.eval()
 
     results = []
@@ -99,9 +101,15 @@ def evaluation(args, model, data_model, save_path):
             }
             results.append(pred)
 
-    with open(os.path.join(save_path, 'outputs.json'), 'w') as f:
+    pred_file = os.path.join(save_path, 'outputs.json')
+    with open(pred_file, 'w') as f:
         json.dump(results, f, indent=4)
 
+    # get [micro, macro]-[precision, recall, f1]
+    eval_args = Namespace(v=True,p=pred_file, g=os.path.join(args.data_dir, args.test_data) )
+    p, r, f1 = run_evaluation(eval_args)
+    print('Official Scores:')
+    print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p,r,f1))
 
 if __name__ == '__main__':
     total_parser = argparse.ArgumentParser()

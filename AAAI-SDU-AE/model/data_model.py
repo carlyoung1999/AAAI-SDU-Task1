@@ -45,6 +45,8 @@ class SDUDataModel(pl.LightningDataModule):
         parser.add_argument('--valid_batchsize', default=16, type=int)
         
         parser.add_argument('--nlabels', default=6, type=int)
+        parser.add_argument('--use_span', action="store_true", default=False)
+        parser.add_argument('--no_cache', action="store_true", default=False)
 
         return parent_args
     
@@ -54,7 +56,7 @@ class SDUDataModel(pl.LightningDataModule):
         self.tokenizer = tokenizer
         self.num_workers = args.num_workers
         self.pretrain_model = args.pretrain_model
-
+        self.use_span = args.use_span
         # * Notice that we have 6 labels, the last one is for label padding
         self.label_list = ['O', 'Bs', 'Is', 'Bl', 'Il', '<ignore>']
         self.label_idx_dict = {
@@ -68,6 +70,15 @@ class SDUDataModel(pl.LightningDataModule):
                                                    args.cached_valid_data)
         self.cached_test_data_path = os.path.join(args.data_dir,
                                                   args.cached_test_data)
+
+        if args.no_cache == True:
+            print("Removing cached dataset")
+            if os.path.exists(self.cached_train_data_path):
+                os.remove(self.cached_train_data_path)
+            if os.path.exists(self.cached_valid_data_path):
+                os.remove(self.cached_valid_data_path)
+            if os.path.exists(self.cached_test_data_path):
+                os.remove(self.cached_test_data_path)
 
         self.train_data_path = os.path.join(args.data_dir, args.train_data)
         self.valid_data_path = os.path.join(args.data_dir, args.valid_data)
@@ -172,15 +183,48 @@ class SDUDataModel(pl.LightningDataModule):
                     # print(decode_acronyms)
                     # print(decode_long_forms)
 
-                example = {
-                    'idx': example['ID'],
-                    'text': text,
-                    'offset_mapping': offset_mapping,
-                    'input_ids': torch.LongTensor(input_ids),
-                    'attention_mask': torch.LongTensor(attention_mask),
-                    'token_type_ids': torch.LongTensor(token_type_ids),
-                    'labels': torch.LongTensor(label),
-                }
+                # * If use BERT-Span, we should create start_label and end_label to indicate whether a token is a start or an end of a acronym or a long-term
+                start_s_label,end_s_label = [0]*len(input_ids),[0]*len(input_ids)
+                start_l_label,end_l_label = [0]*len(input_ids),[0]*len(input_ids)
+                if self.use_span == True:
+                    for idx, token_idx in enumerate(input_ids):
+                        start = offset_mapping[idx][0]
+                        end = offset_mapping[idx][1]
+                        if start == end:
+                            continue
+                        for (acro_start, acro_end) in acronyms:
+                            if start == acro_start:
+                                start_s_label[idx] = 1
+                            if end == acro_end:
+                                end_s_label[idx] = 1
+                        for (long_start, long_end) in long_forms:
+                            if start == long_start:
+                                start_l_label[idx] = 1
+                            if end == long_end:
+                                end_l_label[idx] = 1
+                    example = {
+                        'idx': example['ID'],
+                        'text': text,
+                        'offset_mapping': offset_mapping,
+                        'input_ids': torch.LongTensor(input_ids),
+                        'attention_mask': torch.LongTensor(attention_mask),
+                        'token_type_ids': torch.LongTensor(token_type_ids),
+                        'labels': torch.LongTensor(label),
+                        'start_s_labels': torch.LongTensor(start_s_label),
+                        'end_s_labels': torch.LongTensor(end_s_label),
+                        'start_l_labels': torch.LongTensor(start_l_label),
+                        'end_l_labels': torch.LongTensor(end_l_label)
+                    }
+                else:
+                    example = {
+                        'idx': example['ID'],
+                        'text': text,
+                        'offset_mapping': offset_mapping,
+                        'input_ids': torch.LongTensor(input_ids),
+                        'attention_mask': torch.LongTensor(attention_mask),
+                        'token_type_ids': torch.LongTensor(token_type_ids),
+                        'labels': torch.LongTensor(label),
+                    }
                 data.append(example)
 
             output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num/total_num}'
@@ -267,15 +311,47 @@ class SDUDataModel(pl.LightningDataModule):
         labels = nn.utils.rnn.pad_sequence(labels,
                                            batch_first=True,
                                            padding_value=5)
-        batch_data = {
-            'idx': batch_data['idx'],
-            'text': batch_data['text'],
-            'offset_mapping': batch_data['offset_mapping'],
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'token_type_ids': token_type_ids,
-            'labels': labels,
-        }
+
+        if self.use_span == True:
+            start_s_labels = batch_data['start_s_labels']
+            end_s_labels = batch_data['end_s_labels']
+            start_l_labels = batch_data['start_l_labels']
+            end_l_labels = batch_data['end_l_labels']
+            start_s_labels = nn.utils.rnn.pad_sequence(start_s_labels,
+                                                       batch_first=True,
+                                                       padding_value=0)
+            end_s_labels = nn.utils.rnn.pad_sequence(end_s_labels,
+                                                       batch_first=True,
+                                                       padding_value=0)
+            start_l_labels = nn.utils.rnn.pad_sequence(start_l_labels,
+                                                       batch_first=True,
+                                                       padding_value=0)
+            end_l_labels = nn.utils.rnn.pad_sequence(end_l_labels,
+                                                       batch_first=True,
+                                                       padding_value=0)
+            batch_data = {
+                'idx': batch_data['idx'],
+                'text': batch_data['text'],
+                'offset_mapping': batch_data['offset_mapping'],
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'token_type_ids': token_type_ids,
+                'labels': labels,
+                'start_s_labels': start_s_labels,
+                'end_s_labels': end_s_labels,
+                'start_l_labels': start_l_labels,
+                'end_l_labels': end_l_labels
+            }
+        else:
+            batch_data = {
+                'idx': batch_data['idx'],
+                'text': batch_data['text'],
+                'offset_mapping': batch_data['offset_mapping'],
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'token_type_ids': token_type_ids,
+                'labels': labels,
+            }
 
         return batch_data
 

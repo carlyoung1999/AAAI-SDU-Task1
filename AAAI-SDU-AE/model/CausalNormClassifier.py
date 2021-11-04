@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
-from utils import *
+#from utils import *
 from os import path
 import math
 
 
 class Causal_Norm_Classifier(nn.Module):
 
-    def __init__(self, num_classes=1000, feat_dim=2048, use_effect=True, num_head=2, tau=16.0, alpha=3.0, gamma=0.03125,
+    def __init__(self, num_classes=1000, feat_dim=2048, use_effect=True, num_head=2, tau=16.0, alpha=4.0, gamma=0.03125,
                  *args):
         super(Causal_Norm_Classifier, self).__init__()
         self.weight = nn.Parameter(torch.Tensor(num_classes, feat_dim).cuda(), requires_grad=True)
@@ -24,26 +24,48 @@ class Causal_Norm_Classifier(nn.Module):
         stdv = 1. / math.sqrt(weight.size(1))
         weight.data.uniform_(-stdv, stdv)
 
-    def forward(self, x, label, embed):
+    def forward(self, x, label=None, embed=None, stage=None):
+        """
+
+        :param x: (bs, feat_dim)
+        :param label: (bs, 1)
+        :param embed: (1, feat_dim)
+        :return:
+        """
         # calculate capsule normalized feature vector and predict
+        # normed_w: (num_class, feat_dim)
         normed_w = self.multi_head_call(self.causal_norm, self.weight, weight=self.norm_scale)
+        # normed_x: (bs, feat_dim)
         normed_x = self.multi_head_call(self.l2_norm, x)
+        # y: (bs, num_classes)
         y = torch.mm(normed_x * self.scale, normed_w.t())
 
         # remove the effect of confounder c during test
-        if (not self.training) and self.use_effect:
-            self.embed = torch.from_numpy(embed).view(1, -1).to(x.device)
+        if stage=='test' and self.use_effect:
+            self.embed = embed.view(1, -1)
+
+            # normed_c: (1, feat_dim)
             normed_c = self.multi_head_call(self.l2_norm, self.embed)
             head_dim = x.shape[1] // self.num_head
+
+            # x_list: tuple of num_head (bs, head_dim)
             x_list = torch.split(normed_x, head_dim, dim=1)
+
+            # c_list: tuple of num_head (1, head_dim)
             c_list = torch.split(normed_c, head_dim, dim=1)
+
+            # w_list: tuple of num_head (num_classes, head_dim)
             w_list = torch.split(normed_w, head_dim, dim=1)
             output = []
 
             for nx, nc, nw in zip(x_list, c_list, w_list):
+                # cos_val, sin_val: (bs, 1)
                 cos_val, sin_val = self.get_cos_sin(nx, nc)
+
+                # y0: (bs, num_classes) 神奇的python广播机制
                 y0 = torch.mm((nx - cos_val * self.alpha * nc) * self.scale, nw.t())
                 output.append(y0)
+            # y: (bs, num_classes)
             y = sum(output)
 
         return y, None
@@ -87,3 +109,20 @@ def create_model(feat_dim, num_classes=1000, stage1_weights=False, dataset=None,
                                  gamma=gamma)
 
     return clf
+
+if __name__ == "__main__":
+    model = create_model(feat_dim=100, num_classes=3, use_effect=True, num_head=5, tau=16.0, alpha=3.0, gamma=0.03125)
+    x = torch.arange(500).reshape(-1,100).float().cuda()
+    model.to(device='cuda')
+
+    # train
+    model.train()
+    y = model(x)[0]
+    print(y)
+
+    # eval
+    model.eval()
+    import numpy as np
+    embed = np.arange(100,dtype=np.float32)
+    y = model(x, embed=embed)[0]
+    print(y)
