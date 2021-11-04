@@ -2,7 +2,7 @@
 Description: 
 Author: Li Siheng
 Date: 2021-10-11 11:00:12
-LastEditTime: 2021-10-12 08:17:21
+LastEditTime: 2021-10-27 06:50:49
 '''
 import os
 import sys
@@ -19,17 +19,19 @@ from transformers import AutoTokenizer
 from model.data_model import SDUDataModel, SDUDataset
 from model.base_model import BaseAEModel
 from model.bert_lstm_model import BertLSTMModel
-from scorer import *
-from argparse import Namespace
+
 
 def main(args):
 
-    save_path = os.path.join(args.save_dir, args.pretrain_model, args.model_name)
+    save_path = os.path.join(args.save_dir, args.model_name)
+    save_path = os.path.join(save_path, args.pretrain_model)
 
     if args.model_name == 'BertLSTMModel':
         Model = BertLSTMModel
-        hyparas = 'use_crf: {} - bert_lr: {} - head_lr: {} - rnn_size: {} - rnn_layer: {} - use_span: {}'.format(
-            args.use_crf, args.bert_lr, args.head_lr, args.rnn_size, args.rnn_nlayer, args.use_span)
+        hyparas = 'adversarial: {} - divergence: {} - adv_alpha: {} - adv_nloop: {} - use_crf: {} - bert_lr: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
+            args.adversarial, args.divergence, args.adv_alpha, args.adv_nloop,
+            args.use_crf, args.bert_lr, args.lr, args.rnn_size,
+            args.rnn_nlayer)
         save_path = os.path.join(save_path, hyparas)
 
     if not os.path.exists(save_path):
@@ -42,10 +44,10 @@ def main(args):
                                        name='')
     checkpoint = ModelCheckpoint(dirpath=save_path,
                                  save_top_k=1,
-                                 monitor='valid_loss',
-                                 mode='min',
-                                 filename='{epoch:02d}-{valid_loss:.4f}')
-    early_stop = EarlyStopping(monitor='valid_loss', mode='min', patience=3)
+                                 monitor='valid_acc',
+                                 mode='max',
+                                 filename='{epoch:02d}-{valid_acc:.4f}')
+    early_stop = EarlyStopping(monitor='valid_acc', mode='max', patience=5)
     trainer = Trainer.from_argparse_args(args,
                                          logger=logger,
                                          callbacks=[checkpoint, early_stop])
@@ -62,7 +64,7 @@ def main(args):
     else:
         tokenizer = AutoTokenizer.from_pretrained(save_path)
         data_model = SDUDataModel(args, tokenizer)
-        checkpoint_path = os.path.join(args.checkpoint_path)
+        checkpoint_path = os.path.join(save_path, args.checkpoint_path)
 
     # module evaluation
     model = Model.load_from_checkpoint(checkpoint_path, tokenizer=tokenizer)
@@ -77,7 +79,6 @@ def evaluation(args, model, data_model, save_path):
 
     device = torch.device('cuda:0')
     model.to(device)
-    model.stage = 'test'
     model.eval()
 
     results = []
@@ -91,8 +92,9 @@ def evaluation(args, model, data_model, save_path):
 
             text = batch['text'][idx]
             offset_mapping = batch['offset_mapping'][idx]
-            
-            acronyms, long_forms = data_model.decode(text, predict, offset_mapping)
+
+            acronyms, long_forms = data_model.decode(text, predict,
+                                                     offset_mapping)
 
             pred = {
                 'ID': batch['idx'][idx],
@@ -101,22 +103,16 @@ def evaluation(args, model, data_model, save_path):
             }
             results.append(pred)
 
-    pred_file = os.path.join(save_path, 'outputs.json')
-    with open(pred_file, 'w') as f:
+    with open(os.path.join(save_path, 'outputs.json'), 'w') as f:
         json.dump(results, f, indent=4)
 
-    # get [micro, macro]-[precision, recall, f1]
-    eval_args = Namespace(v=True,p=pred_file, g=os.path.join(args.data_dir, args.test_data) )
-    p, r, f1 = run_evaluation(eval_args)
-    print('Official Scores:')
-    print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p,r,f1))
 
 if __name__ == '__main__':
     total_parser = argparse.ArgumentParser()
 
     # * Args for data preprocessing
     total_parser = SDUDataModel.add_data_specific_args(total_parser)
-    
+
     # * Args for training
     total_parser = Trainer.add_argparse_args(total_parser)
 

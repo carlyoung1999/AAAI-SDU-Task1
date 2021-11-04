@@ -2,7 +2,7 @@
 Description: 
 Author: Li Siheng
 Date: 2021-09-28 08:40:34
-LastEditTime: 2021-10-12 01:45:34
+LastEditTime: 2021-10-27 07:31:32
 '''
 import os
 import argparse
@@ -13,15 +13,16 @@ import pytorch_lightning as pl
 from transformers import AutoConfig, AutoModel
 from torchcrf import CRF
 from .base_model import BaseAEModel
+from .adversarial_loss import AdversarialLoss
 
 
 class BertLSTMModel(BaseAEModel):
     def __init__(self, args, tokenizer) -> None:
         super().__init__(args, tokenizer)
-        
+
         if isinstance(args, dict):
             args = argparse.Namespace(**args)
-            
+
         self.tokenizer = tokenizer
         self.nlabels = args.nlabels
         self.use_crf = args.use_crf
@@ -41,40 +42,62 @@ class BertLSTMModel(BaseAEModel):
         self.ffn = nn.Linear(2 * args.rnn_size, self.nlabels, bias=False)
         self.loss_fn = nn.CrossEntropyLoss()
 
+        if self.hparams.adversarial:
+            self.adv_loss_fn = AdversarialLoss(args)
+
         if self.use_crf:
             self.crf = CRF(self.nlabels, batch_first=True)
 
-    def forward(self, input_ids, attention_mask, token_type_ids, labels=None):
+    def forward(self,
+                attention_mask,
+                token_type_ids,
+                input_ids=None,
+                inputs_embeds=None,
+                labels=None,
+                adversarial_ite=False):
 
-        outputs = self.bert(input_ids, attention_mask, token_type_ids)
+        outputs = self.bert(input_ids,
+                            attention_mask,
+                            token_type_ids,
+                            inputs_embeds=inputs_embeds)
         hidden_state = outputs.last_hidden_state
 
         hidden_state, _ = self.lstm(hidden_state)
-
         hidden_state = self.dropout(hidden_state)
 
         logits = self.ffn(hidden_state)
 
         loss = None
         if labels is not None:
-            
+
             if self.use_crf:
                 loss = -1 * self.crf(logits, labels, attention_mask.byte())
-            else:            
-                loss = self.loss_fn(logits.view(-1, self.nlabels), labels.view(-1))
+            else:
+                loss = self.loss_fn(logits.view(-1, self.nlabels),
+                                    labels.view(-1))
+
+            if self.training and self.hparams.adversarial and adversarial_ite is False:
+
+                adv_loss = self.adv_loss_fn(model=self,
+                                            logits=logits,
+                                            attention_mask=attention_mask,
+                                            token_type_ids=token_type_ids,
+                                            input_ids=input_ids,
+                                            labels=labels)
+                loss += self.hparams.adv_alpha * adv_loss
 
         return loss, logits
 
-    def predict(self, input_ids, attenton_mask, token_type_ids):
+    def predict(self, input_ids, attention_mask, token_type_ids):
 
         _, logits = self(
-            input_ids,
-            attenton_mask,
-            token_type_ids,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
         )
-        
+
         if self.use_crf:
-            predict = self.crf.decode(logits, attenton_mask.byte())
+            predict = self.crf.decode(logits, attention_mask.byte())
         else:
             predict = logits.argmax(dim=-1)
             predict = predict.cpu().tolist()
