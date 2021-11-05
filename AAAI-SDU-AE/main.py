@@ -19,7 +19,8 @@ from transformers import AutoTokenizer
 from model.data_model import SDUDataModel, SDUDataset
 from model.base_model import BaseAEModel
 from model.bert_lstm_model import BertLSTMModel
-
+from scorer import *
+from argparse import Namespace
 
 def main(args):
 
@@ -103,9 +104,15 @@ def evaluation(args, model, data_model, save_path):
             }
             results.append(pred)
 
-    with open(os.path.join(save_path, 'outputs.json'), 'w') as f:
+    pred_file = os.path.join(save_path, 'outputs.json')
+    with open(pred_file, 'w') as f:
         json.dump(results, f, indent=4)
 
+    # get [micro, macro]-[precision, recall, f1]
+    eval_args = Namespace(v=True, p=pred_file, g=os.path.join(args.data_dir, args.test_data))
+    p, r, f1 = run_evaluation(eval_args)
+    print('Official Scores:')
+    print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p, r, f1))
 
 if __name__ == '__main__':
     total_parser = argparse.ArgumentParser()
