@@ -45,6 +45,7 @@ class SDUDataModel(pl.LightningDataModule):
         parser.add_argument('--valid_batchsize', default=16, type=int)
 
         parser.add_argument('--nlabels', default=6, type=int)
+        parser.add_argument('--use_span', action="store_true", default=False)
         parser.add_argument('--no_cache', action="store_true", default=False)
 
         return parent_args
@@ -55,6 +56,13 @@ class SDUDataModel(pl.LightningDataModule):
         self.tokenizer = tokenizer
         self.num_workers = args.num_workers
         self.pretrain_model = args.pretrain_model
+        self.use_span = args.use_span
+        # * Notice that we have 6 labels, the last one is for label padding
+        self.label_list = ['O', 'Bs', 'Is', 'Bl', 'Il', '<ignore>']
+        self.label_idx_dict = {
+            label: idx
+            for idx, label in enumerate(self.label_list)
+        }
 
         self.cached_train_data_path = os.path.join(args.data_dir,
                                                    args.cached_train_data)
@@ -86,8 +94,7 @@ class SDUDataModel(pl.LightningDataModule):
             self.train_data = self.creat_dataset(self.cached_train_data_path,
                                                  self.train_data_path)
             self.valid_data = self.creat_dataset(self.cached_valid_data_path,
-                                                 self.valid_data_path,
-                                                 test=True)
+                                                 self.valid_data_path)
         if stage == 'test':
             self.test_data = self.creat_dataset(self.cached_test_data_path,
                                                 self.test_data_path,
@@ -131,72 +138,95 @@ class SDUDataModel(pl.LightningDataModule):
                 attention_mask = encoded['attention_mask']
                 token_type_ids = encoded['token_type_ids']
                 offset_mapping = encoded['offset_mapping']
+                label = [
+                    self.label_idx_dict['O'] for i in range(len(input_ids))
+                ]
 
-                # * If use BERT-Span, we should create start_label and end_label to indicate whether a token is a start or an end of a acronym or a long-term
-                label = []
-                for i in range(len(input_ids)):
-                    label.append([0,0,0,0])
-
+                # * Construct BIO labels for sequence labelling
                 for idx, token_idx in enumerate(input_ids):
                     start = offset_mapping[idx][0]
                     end = offset_mapping[idx][1]
                     if start == end:
                         continue
                     for (acro_start, acro_end) in acronyms:
-                        if start == acro_start:
-                            label[idx][0] = 1
-                        if end == acro_end:
-                            label[idx][1] = 1
+
+                        if start == acro_start or start == acro_start - 1 and text[
+                            start] == ' ':
+                            label[idx] = self.label_idx_dict['Bs']
+                        elif start > acro_start and end <= acro_end:
+                            label[idx] = self.label_idx_dict['Is']
                     for (long_start, long_end) in long_forms:
-                        if start == long_start:
-                            label[idx][2] = 1
-                        if end == long_end:
-                            label[idx][3] = 1
+
+                        if start == long_start or start == long_start - 1 and text[
+                            start] == ' ':
+                            label[idx] = self.label_idx_dict['Bl']
+                        elif start > long_start and end <= long_end:
+                            label[idx] = self.label_idx_dict['Il']
 
                 # * Notice that we must confirm that we can acquire ground-truth
                 # * acronyms and long-forms with ground-truth labels
                 decode_acronyms, decode_long_forms = self.decode(
                     text, label, offset_mapping)
 
-                if test == True:
-                    example = {
-                        'idx': example['ID'],
-                        'text': text,
-                        'offset_mapping': offset_mapping,
-                        'input_ids': torch.LongTensor(input_ids),
-                        'attention_mask': torch.LongTensor(attention_mask),
-                        'token_type_ids': torch.LongTensor(token_type_ids),
-                        'labels': torch.FloatTensor(label),
-                    }
-                    data.append(example)
-                elif sorted(acronyms) == sorted(decode_acronyms) and sorted(
+                if sorted(acronyms) == sorted(decode_acronyms) and sorted(
                         long_forms) == sorted(decode_long_forms):
                     annotated_correct_num += 1
-                    # 标注错误的不进行训练
-                    example = {
-                        'idx': example['ID'],
-                        'text': text,
-                        'offset_mapping': offset_mapping,
-                        'input_ids': torch.LongTensor(input_ids),
-                        'attention_mask': torch.LongTensor(attention_mask),
-                        'token_type_ids': torch.LongTensor(token_type_ids),
-                        'labels': torch.FloatTensor(label),
-                    }
-                    data.append(example)
                 else:
                     pass
                     # * Have a look at the error annotation
-                    # print(example["ID"])
                     # print(text)
                     # print('Gronund-truth')
                     # print(acronyms)
                     # print(long_forms)
                     # print(encoded)
-                    #
+
                     # print('Decode')
                     # print(decode_acronyms)
                     # print(decode_long_forms)
-                    # print("--------------------------------")
+
+                # * If use BERT-Span, we should create start_label and end_label to indicate whether a token is a start or an end of a acronym or a long-term
+                start_s_label, end_s_label = [0] * len(input_ids), [0] * len(input_ids)
+                start_l_label, end_l_label = [0] * len(input_ids), [0] * len(input_ids)
+                if self.use_span == True:
+                    for idx, token_idx in enumerate(input_ids):
+                        start = offset_mapping[idx][0]
+                        end = offset_mapping[idx][1]
+                        if start == end:
+                            continue
+                        for (acro_start, acro_end) in acronyms:
+                            if start == acro_start:
+                                start_s_label[idx] = 1
+                            if end == acro_end:
+                                end_s_label[idx] = 1
+                        for (long_start, long_end) in long_forms:
+                            if start == long_start:
+                                start_l_label[idx] = 1
+                            if end == long_end:
+                                end_l_label[idx] = 1
+                    example = {
+                        'idx': example['ID'],
+                        'text': text,
+                        'offset_mapping': offset_mapping,
+                        'input_ids': torch.LongTensor(input_ids),
+                        'attention_mask': torch.LongTensor(attention_mask),
+                        'token_type_ids': torch.LongTensor(token_type_ids),
+                        'labels': torch.LongTensor(label),
+                        'start_s_labels': torch.LongTensor(start_s_label),
+                        'end_s_labels': torch.LongTensor(end_s_label),
+                        'start_l_labels': torch.LongTensor(start_l_label),
+                        'end_l_labels': torch.LongTensor(end_l_label)
+                    }
+                else:
+                    example = {
+                        'idx': example['ID'],
+                        'text': text,
+                        'offset_mapping': offset_mapping,
+                        'input_ids': torch.LongTensor(input_ids),
+                        'attention_mask': torch.LongTensor(attention_mask),
+                        'token_type_ids': torch.LongTensor(token_type_ids),
+                        'labels': torch.LongTensor(label),
+                    }
+                data.append(example)
 
             output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num / total_num}'
             print(output)
@@ -207,46 +237,54 @@ class SDUDataModel(pl.LightningDataModule):
         return data
 
     def decode(self, text, labels, offset_mapping):
-        """This function used for generating acronyms and long_forms given the span label
-            The search process is start from start_label.
-        :param labels (list[list[int]]): (seq_len, nlabels)
-        :param offset_mapping (list[(int,int)]): len * [start, end], each represents the position of token in labels
-        :return:
+        """This function used for generating acronyms and long_forms given the BIO label
+
+        Args:
+            text (str): text information
+            labels (list[int]): BIO labels
+            offset_mapping (list[(int, int)]): len * [start, end], each represents the position of token in labels
+
+        Returns:
+            acronyms (list[[int, int]]): The detected acronyms position in text
+            long-forms (list[[int, int]]): The detected long-forms position in text
         """
         acronyms = []
         long_forms = []
         for i in range(len(offset_mapping)):
-            # 遍历每一个元素
-            start_s_label = labels[i][0]
-            end_s_label = labels[i][1]
-            start_l_label = labels[i][2]
-            end_l_label = labels[i][3]
+            cur = self.label_list[labels[i]]
+            if cur == 'Bs':
+                j = i
+                while True:
+                    j += 1
+                    if j == len(labels):
+                        j -= 1
+                        break
+                    next = self.label_list[labels[j]]
+                    if next != 'Is':
+                        j -= 1
+                        break
+                start = offset_mapping[i][0]
+                end = offset_mapping[j][1]
+                if text[start] == ' ':
+                    start += 1
+                acronyms.append([start, end])
+            elif cur == 'Bl':
+                j = i
+                while True:
+                    j += 1
+                    if j == len(labels):
+                        j -= 1
+                        break
+                    next = self.label_list[labels[j]]
+                    if next != 'Il':
+                        j -= 1
+                        break
+                start = offset_mapping[i][0]
+                end = offset_mapping[j][1]
+                if text[start] == ' ':
+                    start += 1
+                long_forms.append([start, end])
 
-            # Search 【acronym】
-            if start_s_label == 1:
-                j=i
-                while j<len(offset_mapping):
-                    if labels[j][1] == 1:
-                        start = offset_mapping[i][0]
-                        end = offset_mapping[j][1]
-                        acronyms.append([start, end])
-                        break
-                    elif (j!=i) and labels[j][0] == 1:
-                        break
-                    j = j+1
-
-            # Search 【long_forms】
-            if start_l_label == 1:
-                j=i
-                while j<len(offset_mapping):
-                    if labels[j][3] == 1:
-                        start = offset_mapping[i][0]
-                        end = offset_mapping[j][1]
-                        long_forms.append([start,end])
-                        break
-                    elif (j!=i) and labels[j][2] == 1:
-                        break
-                    j = j+1
         return acronyms, long_forms
 
     def collate_fn(self, batch):
@@ -271,34 +309,50 @@ class SDUDataModel(pl.LightningDataModule):
         token_type_ids = nn.utils.rnn.pad_sequence(token_type_ids,
                                                    batch_first=True,
                                                    padding_value=0)
-        # labels: List[Tensor] (bs, each_seq_len, 4)
-        # labels = nn.utils.rnn.pad_sequence(labels,
-        #                                    batch_first=True,
-        #                                    padding_value=5)
-        paded_labels = []
-        for i in range(labels[0].shape[-1]):
-            # First get each label
-            # part_label: List[Tensor] (bs, each_seq_len, 1)
-            part_label = []
-            for label in labels:
-                part_label.append( label[:,i].unsqueeze(-1) )
-            part_label = nn.utils.rnn.pad_sequence(part_label,
-                                                   batch_first=True,
-                                                   padding_value=0)
-            paded_labels.append(
-                part_label
-            )
-        labels = torch.cat(paded_labels, dim=-1)
+        labels = nn.utils.rnn.pad_sequence(labels,
+                                           batch_first=True,
+                                           padding_value=5)
 
-        batch_data = {
-            'idx': batch_data['idx'],
-            'text': batch_data['text'],
-            'offset_mapping': batch_data['offset_mapping'],
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'token_type_ids': token_type_ids,
-            'labels': labels,
-        }
+        if self.use_span == True:
+            start_s_labels = batch_data['start_s_labels']
+            end_s_labels = batch_data['end_s_labels']
+            start_l_labels = batch_data['start_l_labels']
+            end_l_labels = batch_data['end_l_labels']
+            start_s_labels = nn.utils.rnn.pad_sequence(start_s_labels,
+                                                       batch_first=True,
+                                                       padding_value=0)
+            end_s_labels = nn.utils.rnn.pad_sequence(end_s_labels,
+                                                     batch_first=True,
+                                                     padding_value=0)
+            start_l_labels = nn.utils.rnn.pad_sequence(start_l_labels,
+                                                       batch_first=True,
+                                                       padding_value=0)
+            end_l_labels = nn.utils.rnn.pad_sequence(end_l_labels,
+                                                     batch_first=True,
+                                                     padding_value=0)
+            batch_data = {
+                'idx': batch_data['idx'],
+                'text': batch_data['text'],
+                'offset_mapping': batch_data['offset_mapping'],
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'token_type_ids': token_type_ids,
+                'labels': labels,
+                'start_s_labels': start_s_labels,
+                'end_s_labels': end_s_labels,
+                'start_l_labels': start_l_labels,
+                'end_l_labels': end_l_labels
+            }
+        else:
+            batch_data = {
+                'idx': batch_data['idx'],
+                'text': batch_data['text'],
+                'offset_mapping': batch_data['offset_mapping'],
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'token_type_ids': token_type_ids,
+                'labels': labels,
+            }
 
         return batch_data
 
