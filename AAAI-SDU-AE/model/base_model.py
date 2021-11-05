@@ -73,6 +73,8 @@ class BaseAEModel(pl.LightningModule):
         if self.hparams.adversarial:
             self.adv_loss_fn = AdversarialLoss(args) 
 
+        self.model_name = args.model_name
+
     def setup(self, stage) -> None:
 
         if stage == 'fit':
@@ -92,13 +94,21 @@ class BaseAEModel(pl.LightningModule):
     def training_step(self, batch, batch_idx):
 
         inputs = self.train_inputs(batch)
-        loss, logits = self(**inputs)            
-                
-        mask = (batch['labels'] != 5).long()
-        ntotal = mask.sum()
-        ncorrect = ((logits.argmax(dim=-1) == batch['labels']).long() *
-                    mask).sum()
-        acc = ncorrect / ntotal
+        loss, logits = self(**inputs)
+
+        if self.model_name == "BertLSTMModel":
+            mask = (batch['labels'] != 5).long()
+            ntotal = mask.sum()
+            ncorrect = ((logits.argmax(dim=-1) == batch['labels']).long() *
+                        mask).sum()
+            acc = ncorrect / ntotal
+        elif self.model_name == "BertSpanModel":
+            mask = inputs["attention_mask"].unsqueeze(-1).expand(-1, -1, 4)
+            ntotal = mask.sum()
+            ncorrect = (((logits >= 0.5).long() == batch['labels']).long() * mask).sum()
+            acc = ncorrect / ntotal
+        else:
+            raise ValueError(f"No model_name: {self.model_name}")
 
         self.log('train_loss', loss, on_step=True, prog_bar=True)
         self.log("train_acc", acc, on_step=True, prog_bar=True)
@@ -109,11 +119,19 @@ class BaseAEModel(pl.LightningModule):
         inputs = self.train_inputs(batch)
         loss, logits = self(**inputs)
 
-        mask = (batch['labels'] != 5).long()
-        ntotal = mask.sum()
-        ncorrect = ((logits.argmax(dim=-1) == batch['labels']).long() *
-                    mask).sum()
-        acc = ncorrect / ntotal
+        if self.model_name == 'BertLSTMModel':
+            mask = (batch['labels'] != 5).long()
+            ntotal = mask.sum()
+            ncorrect = ((logits.argmax(dim=-1) == batch['labels']).long() *
+                        mask).sum()
+            acc = ncorrect / ntotal
+        elif self.model_name == 'BertSpanModel':
+            mask = inputs["attention_mask"].unsqueeze(-1).expand(-1, -1, 4)
+            ntotal = mask.sum()
+            ncorrect = (((logits >= 0.5).long() == batch['labels']).long() * mask).sum()
+            acc = ncorrect / ntotal
+        else:
+            raise ValueError(f"No model_name: {self.model_name}")
 
         self.log('valid_loss', loss, on_epoch=True, prog_bar=True)
         self.log("valid_acc", acc, on_step=True, prog_bar=True)

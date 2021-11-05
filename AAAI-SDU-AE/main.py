@@ -19,6 +19,7 @@ from transformers import AutoTokenizer
 from model.data_model import SDUDataModel, SDUDataset
 from model.base_model import BaseAEModel
 from model.bert_lstm_model import BertLSTMModel
+from model.bert_span_model import BertSpanModel
 from scorer import *
 from argparse import Namespace
 
@@ -34,6 +35,15 @@ def main(args):
             args.use_crf, args.bert_lr, args.lr, args.rnn_size,
             args.rnn_nlayer)
         save_path = os.path.join(save_path, hyparas)
+    elif args.model_name == 'BertSpanModel':
+        Model = BertSpanModel
+        hyparas = 'adversarial: {} - divergence: {} - adv_alpha: {} - adv_nloop: {} - use_crf: {} - bert_lr: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
+            args.adversarial, args.divergence, args.adv_alpha, args.adv_nloop,
+            args.use_crf, args.bert_lr, args.lr, args.rnn_size,
+            args.rnn_nlayer)
+        save_path = os.path.join(save_path, hyparas)
+    else:
+        raise ValueError(f"No model_name: {args.model_name}")
 
     if not os.path.exists(save_path):
         os.makedirs(save_path)
