@@ -39,6 +39,9 @@ class BertSpanModel(BaseAEModel):
         self.dropout = nn.Dropout(args.ffn_dropout)
         self.span_layer = nn.Linear(2 * args.rnn_size, 4, bias=False)
         self.span_loss = nn.BCEWithLogitsLoss()
+        self.backup = {}
+        self.logits = None
+        self.labels = None
 
     def forward(self, input_ids, attention_mask, token_type_ids, labels=None):
         outputs = self.bert(input_ids, attention_mask, token_type_ids)
@@ -49,6 +52,8 @@ class BertSpanModel(BaseAEModel):
         hidden_state = self.dropout(hidden_state)  # (bs, seq_len, feat_dim)
 
         logits = self.span_layer(hidden_state)  # (bs, seq_len, 4)
+        self.logits = logits
+        self.labels = labels
 
         loss = None
         if labels is not None:
@@ -68,3 +73,35 @@ class BertSpanModel(BaseAEModel):
         predict = torch.cat(predict,dim=-1)
         predict = predict.cpu().tolist()
         return predict
+
+    def attack(self, epsilon=1., emb_name='word_embeddings'):
+        # 只改变word_embedding的梯度
+        for name, param in self.named_parameters():
+            if param.requires_grad and emb_name in name:
+                self.backup[name] = param.data.clone()
+                norm = torch.norm(param.grad)
+                if norm != 0 and not torch.isnan(norm):
+                    r_at = epsilon * param.grad / norm
+                    param.data.add_(r_at)
+
+
+    def restore(self, emb_name='word_embeddings'):
+        # 只改变word_embedding的梯度
+        for name, param in self.named_parameters():
+            if param.requires_grad and emb_name in name:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
+
+    def backward(self, loss, optimizer, optimizer_idx):
+        if self.hparams.adversarial:
+            loss.backward(retain_graph=True)
+        else:
+            loss.backward()
+
+    def on_after_backward(self) -> None:
+        if self.hparams.adversarial:
+            self.attack()
+            loss_adv = self.span_loss(self.logits, self.labels)
+            loss_adv.backward()
+            self.restore()
