@@ -46,6 +46,7 @@ class SDUDataModel(pl.LightningDataModule):
 
         parser.add_argument('--nlabels', default=6, type=int)
         parser.add_argument('--no_cache', action="store_true", default=False)
+        parser.add_argument('--use_extra_data', action="store_true", default=False)
 
         return parent_args
 
@@ -80,6 +81,7 @@ class SDUDataModel(pl.LightningDataModule):
                 os.remove(self.cached_valid_data_path)
             if os.path.exists(self.cached_test_data_path):
                 os.remove(self.cached_test_data_path)
+        self.use_extra_data = args.use_extra_data
 
         self.train_data_path = os.path.join(args.data_dir, args.train_data)
         self.valid_data_path = os.path.join(args.data_dir, args.valid_data)
@@ -99,7 +101,7 @@ class SDUDataModel(pl.LightningDataModule):
                                                               stage="valid")
             elif self.model_name == 'BertSpanModel':
                 self.train_data = self.creat_BertSpan_dataset(self.cached_train_data_path, self.train_data_path,
-                                                              stage="train")
+                                                              self.use_extra_data,stage="train")
                 self.valid_data = self.creat_BertSpan_dataset(self.cached_valid_data_path, self.valid_data_path,
                                                               stage="valid")
             else:
@@ -249,7 +251,7 @@ class SDUDataModel(pl.LightningDataModule):
 
         return data
 
-    def creat_BertSpan_dataset(self, cached_data_path, data_path, stage):
+    def creat_BertSpan_dataset(self, cached_data_path, data_path, use_extra_data= False, stage="None"):
 
         if os.path.exists(cached_data_path):
             print('Loading cached dataset...')
@@ -335,6 +337,12 @@ class SDUDataModel(pl.LightningDataModule):
 
             output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num / total_num}'
             print(output)
+
+            if use_extra_data == True:
+                extra_data = json.load(open("./data/extra/train.json", 'r'))
+                tmp_tokenizer = AutoTokenizer.from_pretrained("roberta-base",add_prefix_space=True)
+                for example in extra_data:
+                    data.append( self.tokenize_and_align_labels_for_Span(example,tmp_tokenizer) )
 
             data = SDUDataset(data)
             torch.save(data, cached_data_path)
@@ -516,6 +524,76 @@ class SDUDataModel(pl.LightningDataModule):
             raise ValueError(f"No model_name: {self.model_name}")
         return acronyms, long_forms
 
+    def tokenize_and_align_labels_for_Span(self, example, tokenizer):
+        encoded = tokenizer(example["tokens"], is_split_into_words=True, return_offsets_mapping=True,
+                                 truncation=True, return_token_type_ids=True,
+                                 max_length=512)
+        labels = example["labels"]
+        input_ids = encoded['input_ids']
+        offset_mapping = encoded['offset_mapping']
+        attention_mask = encoded['attention_mask']
+        token_type_ids = encoded['token_type_ids']
+        word_ids = encoded.word_ids()
+        label_ids = []
+
+        for idx, word_idx in enumerate(word_ids):
+            if word_idx is None:
+                label_ids.append([0, 0, 0, 0])
+
+            elif labels[word_idx] == 'O':
+                label_ids.append([0, 0, 0, 0])
+
+            elif labels[word_idx] == 'B-short':
+                if word_ids[idx - 1] == None or labels[word_ids[idx - 1]] != 'B-short':
+                    if word_ids[idx + 1] == None or (
+                            (labels[word_ids[idx + 1]] != 'I-short') and (labels[word_ids[idx + 1]] != 'B-short')):
+                        label_ids.append([1, 1, 0, 0])
+                    else:
+                        label_ids.append([1, 0, 0, 0])
+                elif word_ids[idx + 1] == None or (
+                        (labels[word_ids[idx + 1]] != 'I-short') and (labels[word_ids[idx + 1]] != 'B-short')):
+                    label_ids.append([0, 1, 0, 0])
+                else:
+                    label_ids.append([0, 0, 0, 0])
+
+            elif labels[word_idx] == 'B-long':
+                if word_ids[idx - 1] == None or labels[word_ids[idx - 1]] != 'B-long':
+                    if word_ids[idx + 1] == None or (
+                            (labels[word_ids[idx + 1]] != 'I-long') and (labels[word_ids[idx + 1]] != 'B-long')):
+                        label_ids.append([0, 0, 1, 1])
+                    else:
+                        label_ids.append([0, 0, 1, 0])
+                elif word_ids[idx + 1] == None or (
+                        (labels[word_ids[idx + 1]] != 'I-long') and (labels[word_ids[idx + 1]] != 'B-long')):
+                    label_ids.append([0, 0, 0, 1])
+                else:
+                    label_ids.append([0, 0, 0, 0])
+
+            elif labels[word_idx] == 'I-short':
+                if word_ids[idx + 1] == None or labels[word_ids[idx + 1]] != 'I-short':
+                    label_ids.append([0, 1, 0, 0])
+                else:
+                    label_ids.append([0, 0, 0, 0])
+
+            elif labels[word_idx] == 'I-long':
+                if word_ids[idx + 1] == None or labels[word_ids[idx + 1]] != 'I-long':
+                    label_ids.append([0, 0, 0, 1])
+                else:
+                    label_ids.append([0, 0, 0, 0])
+
+            else:
+                raise NotImplementedError("Case does not implement.")
+
+        new_example = {
+            'idx': example['id'],
+            'text': ' '.join(example["tokens"]),
+            'offset_mapping': offset_mapping,
+            'input_ids': torch.LongTensor(input_ids),
+            'attention_mask': torch.LongTensor(attention_mask),
+            'token_type_ids': torch.LongTensor(token_type_ids),
+            'labels': torch.FloatTensor(label_ids),
+        }
+        return new_example
 
 
 class SDUDataset(Dataset):
