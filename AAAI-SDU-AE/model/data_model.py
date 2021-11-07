@@ -39,7 +39,7 @@ class SDUDataModel(pl.LightningDataModule):
                             default='cached_valid_data.pkl',
                             type=str)
         parser.add_argument('--cached_test_data',
-                            default='cached_valid_data.pkl',
+                            default='cached_test_data.pkl',
                             type=str)
         parser.add_argument('--train_batchsize', default=32, type=int)
         parser.add_argument('--valid_batchsize', default=16, type=int)
@@ -155,71 +155,108 @@ class SDUDataModel(pl.LightningDataModule):
             print('Preprocess data for SDU...')
             dataset = json.load(open(data_path, 'r'))
             data = []
+            if stage == "train" or stage == "valid":
+                total_num = 0
+                annotated_correct_num = 0
 
-            total_num = 0
-            annotated_correct_num = 0
+                for example in dataset:
 
-            for example in dataset:
+                    total_num += 1
+                    text = example['text']
+                    acronyms = example['acronyms']
+                    long_forms = example['long-forms']
 
-                total_num += 1
-                text = example['text']
-                acronyms = example['acronyms']
-                long_forms = example['long-forms']
+                    encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
+                                             max_length=512)
+                    input_ids = encoded['input_ids']
+                    attention_mask = encoded['attention_mask']
+                    token_type_ids = encoded['token_type_ids']
+                    offset_mapping = encoded['offset_mapping']
+                    label = [
+                        self.label_idx_dict['O'] for i in range(len(input_ids))
+                    ]
 
-                encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
-                                         max_length=512)
-                input_ids = encoded['input_ids']
-                attention_mask = encoded['attention_mask']
-                token_type_ids = encoded['token_type_ids']
-                offset_mapping = encoded['offset_mapping']
-                label = [
-                    self.label_idx_dict['O'] for i in range(len(input_ids))
-                ]
+                    # * Construct BIO labels for sequence labelling
+                    for idx, token_idx in enumerate(input_ids):
+                        start = offset_mapping[idx][0]
+                        end = offset_mapping[idx][1]
+                        if start == end:
+                            continue
+                        for (acro_start, acro_end) in acronyms:
 
-                # * Construct BIO labels for sequence labelling
-                for idx, token_idx in enumerate(input_ids):
-                    start = offset_mapping[idx][0]
-                    end = offset_mapping[idx][1]
-                    if start == end:
-                        continue
-                    for (acro_start, acro_end) in acronyms:
+                            if start == acro_start or start == acro_start - 1 and text[
+                                    start] == ' ':
+                                label[idx] = self.label_idx_dict['Bs']
+                            elif start > acro_start and end <= acro_end:
+                                label[idx] = self.label_idx_dict['Is']
+                        for (long_start, long_end) in long_forms:
 
-                        if start == acro_start or start == acro_start - 1 and text[
-                                start] == ' ':
-                            label[idx] = self.label_idx_dict['Bs']
-                        elif start > acro_start and end <= acro_end:
-                            label[idx] = self.label_idx_dict['Is']
-                    for (long_start, long_end) in long_forms:
+                            if start == long_start or start == long_start - 1 and text[
+                                    start] == ' ':
+                                label[idx] = self.label_idx_dict['Bl']
+                            elif start > long_start and end <= long_end:
+                                label[idx] = self.label_idx_dict['Il']
 
-                        if start == long_start or start == long_start - 1 and text[
-                                start] == ' ':
-                            label[idx] = self.label_idx_dict['Bl']
-                        elif start > long_start and end <= long_end:
-                            label[idx] = self.label_idx_dict['Il']
+                    # * Notice that we must confirm that we can acquire ground-truth
+                    # * acronyms and long-forms with ground-truth labels
+                    decode_acronyms, decode_long_forms = self.decode(
+                        text, label, offset_mapping)
 
-                # * Notice that we must confirm that we can acquire ground-truth
-                # * acronyms and long-forms with ground-truth labels
-                decode_acronyms, decode_long_forms = self.decode(
-                    text, label, offset_mapping)
-
-                if stage != "train":
-                    example = {
-                        'idx': example['ID'],
-                        'text': text,
-                        'offset_mapping': offset_mapping,
-                        'input_ids': torch.LongTensor(input_ids),
-                        'attention_mask': torch.LongTensor(attention_mask),
-                        'token_type_ids': torch.LongTensor(token_type_ids),
-                        'labels': torch.LongTensor(label),
-                    }
-                    data.append(example)
-                    if sorted(acronyms) == sorted(decode_acronyms) and sorted(
-                        long_forms) == sorted(decode_long_forms):
+                    if stage != "train":
+                        example = {
+                            'idx': example['ID'],
+                            'text': text,
+                            'offset_mapping': offset_mapping,
+                            'input_ids': torch.LongTensor(input_ids),
+                            'attention_mask': torch.LongTensor(attention_mask),
+                            'token_type_ids': torch.LongTensor(token_type_ids),
+                            'labels': torch.LongTensor(label),
+                        }
+                        data.append(example)
+                        if sorted(acronyms) == sorted(decode_acronyms) and sorted(
+                            long_forms) == sorted(decode_long_forms):
+                            annotated_correct_num += 1
+                    elif sorted(acronyms) == sorted(decode_acronyms) and sorted(
+                            long_forms) == sorted(decode_long_forms):
                         annotated_correct_num += 1
-                elif sorted(acronyms) == sorted(decode_acronyms) and sorted(
-                        long_forms) == sorted(decode_long_forms):
-                    annotated_correct_num += 1
-                    # remove annotation error when prepare training data
+                        # remove annotation error when prepare training data
+                        example = {
+                            'idx': example['ID'],
+                            'text': text,
+                            'offset_mapping': offset_mapping,
+                            'input_ids': torch.LongTensor(input_ids),
+                            'attention_mask': torch.LongTensor(attention_mask),
+                            'token_type_ids': torch.LongTensor(token_type_ids),
+                            'labels': torch.LongTensor(label),
+                        }
+                        data.append(example)
+                    else:
+                        pass
+                        # * Have a look at the error annotation
+                        # print(text)
+                        # print('Gronund-truth')
+                        # print(acronyms)
+                        # print(long_forms)
+                        # print(encoded)
+
+                        # print('Decode')
+                        # print(decode_acronyms)
+                        # print(decode_long_forms)
+
+                output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num/total_num}'
+                print(output)
+
+            else:
+                # 处理test_data
+                for example in dataset:
+                    text = example['text']
+                    encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
+                                             max_length=512)
+                    input_ids = encoded['input_ids']
+                    attention_mask = encoded['attention_mask']
+                    token_type_ids = encoded['token_type_ids']
+                    offset_mapping = encoded['offset_mapping']
+
                     example = {
                         'idx': example['ID'],
                         'text': text,
@@ -227,24 +264,8 @@ class SDUDataModel(pl.LightningDataModule):
                         'input_ids': torch.LongTensor(input_ids),
                         'attention_mask': torch.LongTensor(attention_mask),
                         'token_type_ids': torch.LongTensor(token_type_ids),
-                        'labels': torch.LongTensor(label),
                     }
                     data.append(example)
-                else:
-                    pass
-                    # * Have a look at the error annotation
-                    # print(text)
-                    # print('Gronund-truth')
-                    # print(acronyms)
-                    # print(long_forms)
-                    # print(encoded)
-
-                    # print('Decode')
-                    # print(decode_acronyms)
-                    # print(decode_long_forms)
-
-            output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num/total_num}'
-            print(output)
 
             data = SDUDataset(data)
             torch.save(data, cached_data_path)
@@ -260,68 +281,99 @@ class SDUDataModel(pl.LightningDataModule):
             print('Preprocess data for SDU...')
             dataset = json.load(open(data_path, 'r'))
             data = []
+            if stage == "train" or stage == "valid":
+                total_num = 0
+                annotated_correct_num = 0
 
-            total_num = 0
-            annotated_correct_num = 0
+                for example in dataset:
 
-            for example in dataset:
+                    total_num += 1
+                    text = example['text']
+                    acronyms = example['acronyms']
+                    long_forms = example['long-forms']
 
-                total_num += 1
-                text = example['text']
-                acronyms = example['acronyms']
-                long_forms = example['long-forms']
+                    encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
+                                             max_length=512)
+                    input_ids = encoded['input_ids']
+                    attention_mask = encoded['attention_mask']
+                    token_type_ids = encoded['token_type_ids']
+                    offset_mapping = encoded['offset_mapping']
 
-                encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
-                                         max_length=512)
-                input_ids = encoded['input_ids']
-                attention_mask = encoded['attention_mask']
-                token_type_ids = encoded['token_type_ids']
-                offset_mapping = encoded['offset_mapping']
+                    # * If use BERT-Span, we should create start_label and end_label to indicate whether a token is a start or an end of a acronym or a long-term
+                    label = []
+                    for i in range(len(input_ids)):
+                        label.append([0,0,0,0])
 
-                # * If use BERT-Span, we should create start_label and end_label to indicate whether a token is a start or an end of a acronym or a long-term
-                label = []
-                for i in range(len(input_ids)):
-                    label.append([0,0,0,0])
+                    for idx, token_idx in enumerate(input_ids):
+                        start = offset_mapping[idx][0]
+                        end = offset_mapping[idx][1]
+                        if start == end:
+                            continue
+                        for (acro_start, acro_end) in acronyms:
+                            if start == acro_start:
+                                label[idx][0] = 1
+                            if end == acro_end:
+                                label[idx][1] = 1
+                        for (long_start, long_end) in long_forms:
+                            if start == long_start:
+                                label[idx][2] = 1
+                            if end == long_end:
+                                label[idx][3] = 1
 
-                for idx, token_idx in enumerate(input_ids):
-                    start = offset_mapping[idx][0]
-                    end = offset_mapping[idx][1]
-                    if start == end:
-                        continue
-                    for (acro_start, acro_end) in acronyms:
-                        if start == acro_start:
-                            label[idx][0] = 1
-                        if end == acro_end:
-                            label[idx][1] = 1
-                    for (long_start, long_end) in long_forms:
-                        if start == long_start:
-                            label[idx][2] = 1
-                        if end == long_end:
-                            label[idx][3] = 1
+                    # * Notice that we must confirm that we can acquire ground-truth
+                    # * acronyms and long-forms with ground-truth labels
+                    decode_acronyms, decode_long_forms = self.decode(
+                        text, label, offset_mapping)
 
-                # * Notice that we must confirm that we can acquire ground-truth
-                # * acronyms and long-forms with ground-truth labels
-                decode_acronyms, decode_long_forms = self.decode(
-                    text, label, offset_mapping)
-
-                if stage != "train":
-                    example = {
-                        'idx': example['ID'],
-                        'text': text,
-                        'offset_mapping': offset_mapping,
-                        'input_ids': torch.LongTensor(input_ids),
-                        'attention_mask': torch.LongTensor(attention_mask),
-                        'token_type_ids': torch.LongTensor(token_type_ids),
-                        'labels': torch.FloatTensor(label),
-                    }
-                    data.append(example)
-                    if sorted(acronyms) == sorted(decode_acronyms) and sorted(
-                        long_forms) == sorted(decode_long_forms):
+                    if stage != "train":
+                        example = {
+                            'idx': example['ID'],
+                            'text': text,
+                            'offset_mapping': offset_mapping,
+                            'input_ids': torch.LongTensor(input_ids),
+                            'attention_mask': torch.LongTensor(attention_mask),
+                            'token_type_ids': torch.LongTensor(token_type_ids),
+                            'labels': torch.FloatTensor(label),
+                        }
+                        data.append(example)
+                        if sorted(acronyms) == sorted(decode_acronyms) and sorted(
+                            long_forms) == sorted(decode_long_forms):
+                            annotated_correct_num += 1
+                    elif sorted(acronyms) == sorted(decode_acronyms) and sorted(
+                            long_forms) == sorted(decode_long_forms):
                         annotated_correct_num += 1
-                elif sorted(acronyms) == sorted(decode_acronyms) and sorted(
-                        long_forms) == sorted(decode_long_forms):
-                    annotated_correct_num += 1
-                    # remove annotation error when prepare training data
+                        # remove annotation error when prepare training data
+                        example = {
+                            'idx': example['ID'],
+                            'text': text,
+                            'offset_mapping': offset_mapping,
+                            'input_ids': torch.LongTensor(input_ids),
+                            'attention_mask': torch.LongTensor(attention_mask),
+                            'token_type_ids': torch.LongTensor(token_type_ids),
+                            'labels': torch.FloatTensor(label),
+                        }
+                        data.append(example)
+                    else:
+                        pass
+
+                output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num / total_num}'
+                print(output)
+
+                if use_extra_data == True:
+                    extra_data = json.load(open("./data/extra/train.json", 'r'))
+                    tmp_tokenizer = AutoTokenizer.from_pretrained("roberta-base",add_prefix_space=True)
+                    for example in extra_data:
+                        data.append( self.tokenize_and_align_labels_for_Span(example,tmp_tokenizer) )
+            else:
+                # 处理test_data
+                for example in dataset:
+                    text = example['text']
+                    encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
+                                             max_length=512)
+                    input_ids = encoded['input_ids']
+                    attention_mask = encoded['attention_mask']
+                    token_type_ids = encoded['token_type_ids']
+                    offset_mapping = encoded['offset_mapping']
                     example = {
                         'idx': example['ID'],
                         'text': text,
@@ -329,21 +381,8 @@ class SDUDataModel(pl.LightningDataModule):
                         'input_ids': torch.LongTensor(input_ids),
                         'attention_mask': torch.LongTensor(attention_mask),
                         'token_type_ids': torch.LongTensor(token_type_ids),
-                        'labels': torch.FloatTensor(label),
                     }
                     data.append(example)
-                else:
-                    pass
-
-            output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num / total_num}'
-            print(output)
-
-            if use_extra_data == True:
-                extra_data = json.load(open("./data/extra/train.json", 'r'))
-                tmp_tokenizer = AutoTokenizer.from_pretrained("roberta-base",add_prefix_space=True)
-                for example in extra_data:
-                    data.append( self.tokenize_and_align_labels_for_Span(example,tmp_tokenizer) )
-
             data = SDUDataset(data)
             torch.save(data, cached_data_path)
 
@@ -358,7 +397,6 @@ class SDUDataModel(pl.LightningDataModule):
         input_ids = batch_data['input_ids']
         attention_mask = batch_data['attention_mask']
         token_type_ids = batch_data['token_type_ids']
-        labels = batch_data['labels']
 
         input_ids = nn.utils.rnn.pad_sequence(
             input_ids,
@@ -371,9 +409,14 @@ class SDUDataModel(pl.LightningDataModule):
         token_type_ids = nn.utils.rnn.pad_sequence(token_type_ids,
                                                    batch_first=True,
                                                    padding_value=0)
-        labels = nn.utils.rnn.pad_sequence(labels,
-                                           batch_first=True,
-                                           padding_value=5)
+        if "labels" in batch_data:
+            labels = batch_data['labels']
+            labels = nn.utils.rnn.pad_sequence(labels,
+                                               batch_first=True,
+                                               padding_value=5)
+        else:
+            labels = None
+
         batch_data = {
             'idx': batch_data['idx'],
             'text': batch_data['text'],
@@ -395,7 +438,6 @@ class SDUDataModel(pl.LightningDataModule):
         input_ids = batch_data['input_ids']
         attention_mask = batch_data['attention_mask']
         token_type_ids = batch_data['token_type_ids']
-        labels = batch_data['labels']
 
         input_ids = nn.utils.rnn.pad_sequence(
             input_ids,
@@ -408,21 +450,26 @@ class SDUDataModel(pl.LightningDataModule):
         token_type_ids = nn.utils.rnn.pad_sequence(token_type_ids,
                                                    batch_first=True,
                                                    padding_value=0)
-        # labels: List[Tensor] (bs, each_seq_len, 4)
-        paded_labels = []
-        for i in range(labels[0].shape[-1]):
-            # First get each label
-            # part_label: List[Tensor] (bs, each_seq_len, 1)
-            part_label = []
-            for label in labels:
-                part_label.append( label[:,i].unsqueeze(-1) )
-            part_label = nn.utils.rnn.pad_sequence(part_label,
-                                                   batch_first=True,
-                                                   padding_value=0)
-            paded_labels.append(
-                part_label
-            )
-        labels = torch.cat(paded_labels, dim=-1)
+
+        if "labels" in batch_data:
+            # labels: List[Tensor] (bs, each_seq_len, 4)
+            labels = batch_data['labels']
+            paded_labels = []
+            for i in range(labels[0].shape[-1]):
+                # First get each label
+                # part_label: List[Tensor] (bs, each_seq_len, 1)
+                part_label = []
+                for label in labels:
+                    part_label.append( label[:,i].unsqueeze(-1) )
+                part_label = nn.utils.rnn.pad_sequence(part_label,
+                                                       batch_first=True,
+                                                       padding_value=0)
+                paded_labels.append(
+                    part_label
+                )
+            labels = torch.cat(paded_labels, dim=-1)
+        else:
+            labels = None
 
         batch_data = {
             'idx': batch_data['idx'],
