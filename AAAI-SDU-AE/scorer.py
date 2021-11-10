@@ -16,7 +16,7 @@ def run_evaluation(args):
         
         # print(pred.keys())
         # print(len(pred.keys()))
-        pred = [pred[k] for k,v in gold.items()]
+        pred = [pred[k] for k,v in pred.items()]
         gold = [gold[k] for k,v in gold.items()]
     p, r, f1 = score_phrase_level(gold, pred, verbos=verbose)
     return p, r, f1
