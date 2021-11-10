@@ -58,7 +58,7 @@ class SDUDataModel(pl.LightningDataModule):
         self.pretrain_model = args.pretrain_model
         self.model_name = args.model_name
 
-        if self.model_name == "BertLSTMModel":
+        if self.model_name == "BertLSTMModel" or self.model_name == "BertSpanWCRFModel":
             # * Notice that we have 6 labels, the last one is for label padding
             self.label_list = ['O', 'Bs', 'Is', 'Bl', 'Il', '<ignore>']
             self.label_idx_dict = {
@@ -104,6 +104,11 @@ class SDUDataModel(pl.LightningDataModule):
                                                               self.use_extra_data,stage="train")
                 self.valid_data = self.creat_BertSpan_dataset(self.cached_valid_data_path, self.valid_data_path,
                                                               stage="valid")
+            elif self.model_name == 'BertSpanWCRFModel':
+                self.train_data = self.creat_BertSpanWCRF_dataset(self.cached_train_data_path, self.train_data_path,
+                                                              self.use_extra_data,stage="train")
+                self.valid_data = self.creat_BertSpanWCRF_dataset(self.cached_valid_data_path, self.valid_data_path,
+                                                              stage="valid")
             else:
                 raise ValueError(f"No model_name: {self.model_name}")
         if stage == 'test':
@@ -112,6 +117,9 @@ class SDUDataModel(pl.LightningDataModule):
                                                              stage="test")
             elif self.model_name == 'BertSpanModel':
                 self.test_data = self.creat_BertSpan_dataset(self.cached_test_data_path, self.test_data_path,
+                                                             stage="test")
+            elif self.model_name == 'BertSpanWCRFModel':
+                self.test_data = self.creat_BertSpanWCRF_dataset(self.cached_test_data_path, self.test_data_path,
                                                              stage="test")
             else:
                 raise ValueError(f"No model_name: {self.model_name}")
@@ -123,6 +131,9 @@ class SDUDataModel(pl.LightningDataModule):
         elif self.model_name == 'BertSpanModel':
             return DataLoader(self.train_data, shuffle=True, collate_fn=self.BertSpanModel_collate_fn, \
                               batch_size=self.train_batchsize, num_workers=self.num_workers, pin_memory=False)
+        elif self.model_name == 'BertSpanWCRFModel':
+            return DataLoader(self.train_data, shuffle=True, collate_fn=self.BertSpanWCRFModel_collate_fn, \
+                              batch_size=self.train_batchsize, num_workers=self.num_workers, pin_memory=False)
         else:
             raise ValueError(f"No model_name: {self.model_name}")
 
@@ -133,6 +144,9 @@ class SDUDataModel(pl.LightningDataModule):
         elif self.model_name == 'BertSpanModel':
             return DataLoader(self.valid_data, shuffle=False, collate_fn=self.BertSpanModel_collate_fn, \
                               batch_size=self.valid_batchsize, num_workers=self.num_workers, pin_memory=False)
+        elif self.model_name == 'BertSpanWCRFModel':
+            return DataLoader(self.valid_data, shuffle=False, collate_fn=self.BertSpanWCRFModel_collate_fn, \
+                              batch_size=self.valid_batchsize, num_workers=self.num_workers, pin_memory=False)
         else:
             raise ValueError(f"No model_name: {self.model_name}")
 
@@ -142,6 +156,9 @@ class SDUDataModel(pl.LightningDataModule):
                               batch_size=self.valid_batchsize, num_workers=self.num_workers, pin_memory=False)
         elif self.model_name == 'BertSpanModel':
             return DataLoader(self.test_data, shuffle=False, collate_fn=self.BertSpanModel_collate_fn, \
+                              batch_size=self.valid_batchsize, num_workers=self.num_workers, pin_memory=False)
+        elif self.model_name == 'BertSpanWCRFModel':
+            return DataLoader(self.test_data, shuffle=False, collate_fn=self.BertSpanWCRFModel_collate_fn, \
                               batch_size=self.valid_batchsize, num_workers=self.num_workers, pin_memory=False)
         else:
             raise ValueError(f"No model_name: {self.model_name}")
@@ -388,6 +405,148 @@ class SDUDataModel(pl.LightningDataModule):
 
         return data
 
+    def creat_BertSpanWCRF_dataset(self, cached_data_path, data_path, use_extra_data= False, stage="None"):
+        if os.path.exists(cached_data_path):
+            print('Loading cached dataset...')
+            data = torch.load(cached_data_path)
+        else:
+            print('Preprocess data for SDU...')
+            dataset = json.load(open(data_path, 'r'))
+            data = []
+            if stage == "train" or stage == "valid":
+                total_num = 0
+                annotated_correct_num = 0
+
+                for example in dataset:
+
+                    total_num += 1
+                    text = example['text']
+                    acronyms = example['acronyms']
+                    long_forms = example['long-forms']
+
+                    encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
+                                             max_length=512)
+                    input_ids = encoded['input_ids']
+                    attention_mask = encoded['attention_mask']
+                    token_type_ids = encoded['token_type_ids']
+                    offset_mapping = encoded['offset_mapping']
+
+                    # * If use BERT-Span, we should create start_label and end_label to indicate whether a token is a start or an end of a acronym or a long-term
+                    label = []
+                    for i in range(len(input_ids)):
+                        label.append([0,0,0,0])
+
+                    for idx, token_idx in enumerate(input_ids):
+                        start = offset_mapping[idx][0]
+                        end = offset_mapping[idx][1]
+                        if start == end:
+                            continue
+                        for (acro_start, acro_end) in acronyms:
+                            if start == acro_start:
+                                label[idx][0] = 1
+                            if end == acro_end:
+                                label[idx][1] = 1
+                        for (long_start, long_end) in long_forms:
+                            if start == long_start:
+                                label[idx][2] = 1
+                            if end == long_end:
+                                label[idx][3] = 1
+
+                    # * Notice that we must confirm that we can acquire ground-truth
+                    # * acronyms and long-forms with ground-truth labels
+                    decode_acronyms, decode_long_forms = self.decode(
+                        text, label, offset_mapping)
+
+                    # * Because we use CRF to do multi-task, we should create CRF label
+                    crf_label = [
+                        self.label_idx_dict['O'] for i in range(len(input_ids))
+                    ]
+                    for idx, token_idx in enumerate(input_ids):
+                        start = offset_mapping[idx][0]
+                        end = offset_mapping[idx][1]
+                        if start == end:
+                            continue
+                        for (acro_start, acro_end) in acronyms:
+
+                            if start == acro_start or start == acro_start - 1 and text[
+                                start] == ' ':
+                                crf_label[idx] = self.label_idx_dict['Bs']
+                            elif start > acro_start and end <= acro_end:
+                                crf_label[idx] = self.label_idx_dict['Is']
+                        for (long_start, long_end) in long_forms:
+
+                            if start == long_start or start == long_start - 1 and text[
+                                start] == ' ':
+                                crf_label[idx] = self.label_idx_dict['Bl']
+                            elif start > long_start and end <= long_end:
+                                crf_label[idx] = self.label_idx_dict['Il']
+                    # * Because we use CRF to do multi-task, we should create CRF label
+
+                    if stage != "train":
+                        example = {
+                            'idx': example['ID'],
+                            'text': text,
+                            'offset_mapping': offset_mapping,
+                            'input_ids': torch.LongTensor(input_ids),
+                            'attention_mask': torch.LongTensor(attention_mask),
+                            'token_type_ids': torch.LongTensor(token_type_ids),
+                            'labels': torch.FloatTensor(label),
+                            'crf_labels': torch.LongTensor(crf_label),
+                        }
+                        data.append(example)
+                        if sorted(acronyms) == sorted(decode_acronyms) and sorted(
+                            long_forms) == sorted(decode_long_forms):
+                            annotated_correct_num += 1
+                    elif sorted(acronyms) == sorted(decode_acronyms) and sorted(
+                            long_forms) == sorted(decode_long_forms):
+                        annotated_correct_num += 1
+                        # remove annotation error when prepare training data
+                        example = {
+                            'idx': example['ID'],
+                            'text': text,
+                            'offset_mapping': offset_mapping,
+                            'input_ids': torch.LongTensor(input_ids),
+                            'attention_mask': torch.LongTensor(attention_mask),
+                            'token_type_ids': torch.LongTensor(token_type_ids),
+                            'labels': torch.FloatTensor(label),
+                            'crf_labels': torch.LongTensor(crf_label),
+                        }
+                        data.append(example)
+                    else:
+                        pass
+
+                output = f'In {data_path}, there are {total_num} instances and {annotated_correct_num} is right, the ration is {annotated_correct_num / total_num}'
+                print(output)
+
+                if use_extra_data == True:
+                    extra_data = json.load(open("./data/extra/train.json", 'r'))
+                    tmp_tokenizer = AutoTokenizer.from_pretrained("roberta-base",add_prefix_space=True)
+                    for example in extra_data:
+                        data.append( self.tokenize_and_align_labels_for_Span(example,tmp_tokenizer) )
+            else:
+                # 处理test_data
+                for example in dataset:
+                    text = example['text']
+                    encoded = self.tokenizer(text, return_offsets_mapping=True, truncation=True, return_token_type_ids=True,
+                                             max_length=512)
+                    input_ids = encoded['input_ids']
+                    attention_mask = encoded['attention_mask']
+                    token_type_ids = encoded['token_type_ids']
+                    offset_mapping = encoded['offset_mapping']
+                    example = {
+                        'idx': example['ID'],
+                        'text': text,
+                        'offset_mapping': offset_mapping,
+                        'input_ids': torch.LongTensor(input_ids),
+                        'attention_mask': torch.LongTensor(attention_mask),
+                        'token_type_ids': torch.LongTensor(token_type_ids),
+                    }
+                    data.append(example)
+        data = SDUDataset(data)
+        torch.save(data, cached_data_path)
+
+        return data
+
     def BertLSTMModel_collate_fn(self, batch):
 
         batch_data = {}
@@ -483,6 +642,70 @@ class SDUDataModel(pl.LightningDataModule):
 
         return batch_data
 
+    def BertSpanWCRFModel_collate_fn(self, batch):
+
+        batch_data = {}
+        for key in batch[0]:
+            batch_data[key] = [example[key] for example in batch]
+
+        input_ids = batch_data['input_ids']
+        attention_mask = batch_data['attention_mask']
+        token_type_ids = batch_data['token_type_ids']
+
+        input_ids = nn.utils.rnn.pad_sequence(
+            input_ids,
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id)
+
+        attention_mask = nn.utils.rnn.pad_sequence(attention_mask,
+                                                   batch_first=True,
+                                                   padding_value=0)
+        token_type_ids = nn.utils.rnn.pad_sequence(token_type_ids,
+                                                   batch_first=True,
+                                                   padding_value=0)
+
+        if "labels" in batch_data:
+            # labels: List[Tensor] (bs, each_seq_len, 4)
+            labels = batch_data['labels']
+            paded_labels = []
+            for i in range(labels[0].shape[-1]):
+                # First get each label
+                # part_label: List[Tensor] (bs, each_seq_len, 1)
+                part_label = []
+                for label in labels:
+                    part_label.append( label[:,i].unsqueeze(-1) )
+                part_label = nn.utils.rnn.pad_sequence(part_label,
+                                                       batch_first=True,
+                                                       padding_value=0)
+                paded_labels.append(
+                    part_label
+                )
+            labels = torch.cat(paded_labels, dim=-1)
+        else:
+            labels = None
+
+        if "crf_labels" in batch_data:
+            crf_labels = batch_data['crf_labels']
+            crf_labels = nn.utils.rnn.pad_sequence(crf_labels,
+                                               batch_first=True,
+                                               padding_value=5)
+        else:
+            crf_labels = None
+
+        batch_data = {
+            'idx': batch_data['idx'],
+            'text': batch_data['text'],
+            'offset_mapping': batch_data['offset_mapping'],
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'token_type_ids': token_type_ids,
+            'labels': labels,
+            'crf_labels': crf_labels
+        }
+
+        return batch_data
+
+
     def decode(self, text, labels, offset_mapping):
         """This function used for generating acronyms and long_forms given the BIO label
 
@@ -532,7 +755,7 @@ class SDUDataModel(pl.LightningDataModule):
                     if text[start] == ' ':
                         start += 1
                     long_forms.append([start, end])
-        elif self.model_name == 'BertSpanModel':
+        elif self.model_name == 'BertSpanModel' or self.model_name == 'BertSpanWCRFModel':
             acronyms = []
             long_forms = []
             for i in range(len(offset_mapping)):

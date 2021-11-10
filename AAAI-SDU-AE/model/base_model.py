@@ -24,7 +24,7 @@ class BaseAEModel(pl.LightningModule):
         parser.add_argument('--eval', action='store_true', default=False)
         parser.add_argument('--checkpoint_path', default=None, type=str)
         parser.add_argument('--seed', default=42, type=int)
-        parser.add_argument('--save_dir', default='./save', type=str)
+        parser.add_argument('--save_dir', default='save', type=str)
         
         parser.add_argument('--model_name', default='BertLSTMModel', type=str)
         parser.add_argument('--pretrain_model',
@@ -102,7 +102,7 @@ class BaseAEModel(pl.LightningModule):
             ncorrect = ((logits.argmax(dim=-1) == batch['labels']).long() *
                         mask).sum()
             acc = ncorrect / ntotal
-        elif self.model_name == "BertSpanModel":
+        elif self.model_name == "BertSpanModel" or self.model_name == "BertSpanWCRFModel":
             mask = inputs["attention_mask"].unsqueeze(-1).expand(-1, -1, 4)
             ntotal = mask.sum()
             ncorrect = (((logits >= 0.5).long() == batch['labels']).long() * mask).sum()
@@ -125,7 +125,7 @@ class BaseAEModel(pl.LightningModule):
             ncorrect = ((logits.argmax(dim=-1) == batch['labels']).long() *
                         mask).sum()
             acc = ncorrect / ntotal
-        elif self.model_name == 'BertSpanModel':
+        elif self.model_name == 'BertSpanModel' or self.model_name == 'BertSpanWCRFModel':
             mask = inputs["attention_mask"].unsqueeze(-1).expand(-1, -1, 4)
             ntotal = mask.sum()
             ncorrect = (((logits >= 0.5).long() == batch['labels']).long() * mask).sum()

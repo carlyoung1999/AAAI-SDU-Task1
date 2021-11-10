@@ -20,12 +20,14 @@ from model.data_model import SDUDataModel, SDUDataset
 from model.base_model import BaseAEModel
 from model.bert_lstm_model import BertLSTMModel
 from model.bert_span_model import BertSpanModel
+from model.bert_span_model_with_crf import BertSpanWCRFModel
 from scorer import *
 from argparse import Namespace
 
 def main(args):
 
-    save_path = os.path.join(args.save_dir, args.model_name)
+    save_path = os.path.join(args.save_dir, args.data_dir)
+    save_path = os.path.join(save_path, args.model_name)
     save_path = os.path.join(save_path, args.pretrain_model)
 
     if args.model_name == 'BertLSTMModel':
@@ -42,6 +44,13 @@ def main(args):
             args.use_crf, args.bert_lr, args.lr, args.rnn_size,
             args.rnn_nlayer)
         save_path = os.path.join(save_path, hyparas)
+    elif args.model_name == 'BertSpanWCRFModel':
+        Model = BertSpanWCRFModel
+        hyparas = 'adversarial: {} - divergence: {} - adv_alpha: {} - adv_nloop: {} - use_crf: {} - bert_lr: {} - lr: {} - rnn_size: {} - rnn_layer: {}'.format(
+            args.adversarial, args.divergence, args.adv_alpha, args.adv_nloop,
+            args.use_crf, args.bert_lr, args.lr, args.rnn_size,
+            args.rnn_nlayer)
+        save_path = os.path.join(save_path, hyparas)
     else:
         raise ValueError(f"No model_name: {args.model_name}")
 
@@ -49,16 +58,17 @@ def main(args):
         os.makedirs(save_path)
 
     seed_everything(args.seed)
+    args.save_path = save_path
 
     logger = loggers.TensorBoardLogger(save_dir=os.path.join(
         save_path, 'logs/'),
                                        name='')
     checkpoint = ModelCheckpoint(dirpath=save_path,
-                                 save_top_k=1,
-                                 monitor='valid_acc',
+                                 save_top_k=3,
+                                 monitor='valid_f1',
                                  mode='max',
-                                 filename='{epoch:02d}-{valid_acc:.4f}')
-    early_stop = EarlyStopping(monitor='valid_acc', mode='max', patience=5)
+                                 filename='{epoch:02d}-{valid_acc:.4f}-{valid_f1:.4f}')
+    early_stop = EarlyStopping(monitor='valid_f1', mode='max', patience=5)
     trainer = Trainer.from_argparse_args(args,
                                          logger=logger,
                                          callbacks=[checkpoint, early_stop])
@@ -108,21 +118,25 @@ def evaluation(args, model, data_model, save_path):
                                                      offset_mapping)
 
             pred = {
+                'text': batch['text'][idx],
                 'ID': batch['idx'][idx],
                 'acronyms': acronyms,
                 'long-forms': long_forms
             }
             results.append(pred)
 
-    pred_file = os.path.join(save_path, 'outputs.json')
+    pred_file = os.path.join(save_path, 'output.json')
     with open(pred_file, 'w') as f:
         json.dump(results, f, indent=4)
 
     # get [micro, macro]-[precision, recall, f1]
-    eval_args = Namespace(v=True, p=pred_file, g=os.path.join(args.data_dir, args.test_data))
-    p, r, f1 = run_evaluation(eval_args)
-    print('Official Scores:')
-    print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p, r, f1))
+    if 'dev' in args.test_data:
+        # if use dev.json as test_data, Then calculate f1 directly
+        print(f"Use {os.path.join(args.data_dir,args.test_data)} as test_data")
+        eval_args = Namespace(v=True, p=pred_file, g=os.path.join(args.data_dir, args.test_data))
+        p, r, f1 = run_evaluation(eval_args)
+        print('Official Scores:')
+        print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p, r, f1))
 
 if __name__ == '__main__':
     total_parser = argparse.ArgumentParser()
